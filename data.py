@@ -151,14 +151,14 @@ class RangeSampler(Sampler):
         return len(self.range)
 
 MINIMUM_YEAR = 2000
-LIMIT = 100000  # None#1000000
+# LIMIT = 100000  # None#1000000
 CHUNK_SIZE = 2048
 
 
 def skip_paper(paper_json):
     return 'year' not in paper_json or paper_json['year'] < MINIMUM_YEAR
 
-def create_paper_author_score_triples(json_file, output_file):
+def create_paper_author_score_triples(json_file, output_file, LIMIT):
     triples = []
     AUTHOR_SCORE = 1.0
     CITED_AUTHOR_SCORE = 0.2
@@ -374,6 +374,8 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PyTorch Variational Autoencoders for Collaborative Filtering')
     parser.add_argument('--json_file', type=str, default='C:\\Users\iyeshuru\Downloads\dblp_papers_v11.txt',
                         help='Processed input h5 file.')
+    parser.add_argument('--limit', type=int, default=None,
+                        help='Limit number of data to process.')
     args = parser.parse_args()
 
     # json_file = 'C:\\Users\iyeshuru\PycharmProjects\PapersProject\\flow\dblp.cut'
@@ -394,7 +396,7 @@ if __name__ == '__main__':
 
 
     # Process data
-    create_paper_author_score_triples(json_file, raw_output)
+    create_paper_author_score_triples(json_file, raw_output, args.limit)
 
     paper2idxs = {}
 
@@ -493,7 +495,7 @@ if __name__ == '__main__':
     ########## Add title embeddings #######################
     #TODO: Pass last two args differnetly...
     from get_embeddings import collect_embeddings
-    collect_embeddings(json_file, embeddings_output_file, LIMIT, CHUNK_SIZE, skip_paper)
+    collect_embeddings(json_file, embeddings_output_file, args.limit, CHUNK_SIZE, skip_paper)
 
 
 
