@@ -124,7 +124,7 @@ def create_embeddings_for_sentenecs(sentences, embeddings_file):
     return list_of_paper_ids_emb
 
 # Collect embeddings from file and save into h5 (append)
-def collect_embeddings(json_file, processed_output_file, LIMIT, CHUNK_SIZE, skip_paper):
+def collect_embeddings(json_file,unique_paper_count,  processed_output_file, LIMIT, CHUNK_SIZE, skip_paper = None):
     list_of_paper_ids_emb = []
     with open(json_file, 'r') as input_f, h5py.File(processed_output_file, 'w') as processed_f, tf.Graph().as_default():
         # Prepare model
@@ -140,32 +140,20 @@ def collect_embeddings(json_file, processed_output_file, LIMIT, CHUNK_SIZE, skip
         # except:pass
 
         embeddings_ds = processed_f.create_dataset('embeddings',
-                                                    maxshape=(None, embeddings_n),
                                                     #TODO: Compress that heavly?
                                                     compression_opts=9,
-                                                    shape=(0, embeddings_n),
+                                                    shape=(unique_paper_count, embeddings_n),
                                                     compression="gzip",
-                                                    chunks=(CHUNK_SIZE, embeddings_n),
+                                                    chunks=(min(CHUNK_SIZE, unique_paper_count), embeddings_n),
                                                     dtype='f')
-        #
-        # try:
-        #     del processed_f['paper2embeddings_idx']
-        # except:
-        #     pass
 
         paper2embedding_idx_grp = processed_f.create_group('paper2embeddings_idx')
-        # except:
-        #     print('paper2embeddings_idx grp exists')
-        #     paper2embedding_idx_grp = processed_f['paper2embeddings_idx']
-        #     paper2embedding_idx_grp[:] = 0
-
-        embeddings_bf = DatasetBuffer(embeddings_ds)
 
         with tf.Session(config=config) as session:
             session.run([tf.global_variables_initializer(), tf.tables_initializer()])
             chunk = []
             prev_chunk_end = 0
-
+            visited_paper_ids = set()
 
             total_lines = LIMIT if LIMIT else 4107340
             total = 0
@@ -192,7 +180,7 @@ def collect_embeddings(json_file, processed_output_file, LIMIT, CHUNK_SIZE, skip
 
                     paper_json = json.loads(line)
 
-                    if skip_paper(paper_json):
+                    if paper_json['id'] in visited_paper_ids or (skip_paper and skip_paper(paper_json)):
                         filtered_lines += 1
                         continue
 
@@ -206,14 +194,11 @@ def collect_embeddings(json_file, processed_output_file, LIMIT, CHUNK_SIZE, skip
 
                     if len(chunk) == CHUNK_SIZE or i == len(lines)-1: # Notice, we chunk up if we hit 8192 lines.
                         message_embeddings = session.run(output, feed_dict={messages: chunk})
-                        for message_emb in message_embeddings: embeddings_bf.add(message_emb)
-
-                        # embeddings_ds[prev_chunk_end: prev_chunk_end + chunk_n] = np.vstack(message_embeddings)
-
+                        # for message_emb in message_embeddings: embeddings_bf.add(message_emb)
+                        embeddings_ds[prev_chunk_end: prev_chunk_end + chunk_n] = np.vstack(message_embeddings)
                         prev_chunk_end = prev_chunk_end + chunk_n
                         chunk.clear()
 
-        embeddings_bf.close()
 
         print("Total lines processed: {} (skipped: {})".format(total,filtered_lines))
 

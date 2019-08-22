@@ -374,7 +374,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PyTorch Variational Autoencoders for Collaborative Filtering')
     parser.add_argument('--json_file', type=str, default='C:\\Users\iyeshuru\Downloads\dblp_papers_v11.txt',
                         help='Processed input h5 file.')
-    parser.add_argument('--limit', type=int, default=None,
+    parser.add_argument('--limit', type=int, default=1000,
                         help='Limit number of data to process.')
     args = parser.parse_args()
 
@@ -495,7 +495,8 @@ if __name__ == '__main__':
     ########## Add title embeddings #######################
     #TODO: Pass last two args differnetly...
     from get_embeddings import collect_embeddings
-    collect_embeddings(json_file, embeddings_output_file, args.limit, CHUNK_SIZE, skip_paper)
+    # collect_embeddings(json_file, embeddings_output_file, args.limit, CHUNK_SIZE, skip_paper)
+    collect_embeddings(json_file, unique_papers_count, embeddings_output_file, args.limit, CHUNK_SIZE, skip_paper)
 
 
 
