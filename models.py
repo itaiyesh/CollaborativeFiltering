@@ -197,24 +197,24 @@ class MultiVAE(nn.Module):
 
 
 class SparseMultiVAE(nn.Module):
-    def __init__(self, in_dim):
+    def __init__(self, in_dim, hidden_dim1, hidden_dim2):
         super(SparseMultiVAE, self).__init__()
-
+        print("SparseMultiVAE: input dim = {}, hidden_dim1 = {} hidden_dim2 = {}".format(in_dim, hidden_dim1, hidden_dim2))
         self.in_dim = in_dim
         self.title_emb_dim = 512
-        self.small_dim = 50
-        hidden_dim = 300
+        self.hidden_dim2 = hidden_dim2
+        hidden_dim1 = hidden_dim1
 
         # Encode
-        self.emb1 = nn.EmbeddingBag(in_dim, hidden_dim, mode='sum')
-        self.l1_title = nn.Linear(self.title_emb_dim, hidden_dim)
+        self.emb1 = nn.EmbeddingBag(in_dim, hidden_dim1, mode='sum')
+        self.l1_title = nn.Linear(self.title_emb_dim, hidden_dim1)
 
         # Input from concat of emb1 and l1_title
-        self.l1 = nn.Linear(2*hidden_dim, 2 * self.small_dim)
+        self.l1 = nn.Linear(2 * hidden_dim1, 2 * self.hidden_dim2)
 
         # Decode
-        self.l2 = nn.Linear(self.small_dim, hidden_dim)
-        self.l3 = nn.Linear(hidden_dim, in_dim)
+        self.l2 = nn.Linear(self.hidden_dim2, hidden_dim1)
+        self.l3 = nn.Linear(hidden_dim1, in_dim)
         self.drop = nn.Dropout(0.5)
 
         # self.init_weights()
@@ -229,11 +229,6 @@ class SparseMultiVAE(nn.Module):
         # h = F.normalize(input)
         # h = self.drop(h)
 
-        print(array)
-        print(offsets)
-        print(embs)
-        exit()
-
         x = self.emb1(input = array, offsets = offsets, per_sample_weights=weights)
         e = self.l1_title(embs)
         x = torch.cat((x,e), dim=1)
@@ -242,8 +237,8 @@ class SparseMultiVAE(nn.Module):
 
         x = self.l1(x)
         x = torch.tanh(x)
-        mu = x[:, :self.small_dim]
-        logvar = x[:, self.small_dim:]
+        mu = x[:, :self.hidden_dim2]
+        logvar = x[:, self.hidden_dim2:]
 
         return mu, logvar
 

@@ -10,6 +10,7 @@ from scipy import sparse
 from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.sampler import Sampler
 from tqdm import tqdm
+import argparse
 
 from utils import DatasetBuffer
 
@@ -370,11 +371,16 @@ def add_data(paper_author_score_ds, tr_bf, te_bf, index_range, paper2idxs, autho
 
 
 if __name__ == '__main__':
+    parser = argparse.ArgumentParser(description='PyTorch Variational Autoencoders for Collaborative Filtering')
+    parser.add_argument('--json_file', type=str, default='C:\\Users\iyeshuru\Downloads\dblp_papers_v11.txt',
+                        help='Processed input h5 file.')
+    args = parser.parse_args()
 
     # json_file = 'C:\\Users\iyeshuru\PycharmProjects\PapersProject\\flow\dblp.cut'
     # json_file = 'C:\\Users\iyeshuru\PycharmProjects\PapersProject\\flow\dblp.large.cut'
-    json_file = 'C:\\Users\iyeshuru\Downloads\dblp_papers_v11.txt'
+    # json_file = 'C:\\Users\iyeshuru\Downloads\dblp_papers_v11.txt'
     # json_file = 'C:\\Users\iyeshuru\PycharmProjects\PapersProject\\flow\dblp_test.txt'
+    json_file = args.json_file
 
     DATA_DIR = 'data/'
 

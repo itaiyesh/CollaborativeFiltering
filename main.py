@@ -12,21 +12,21 @@ import models
 import metric
 from utils import naive_sparse2tensor,sparse2torch_sparse
 from data import *
-import os
-
-
 #TODO: Dataloader is not multi process
 #TODO: Dataloader to add embeddings
 #TODO: Save mapping of original paper/author ids to indexes.
 #TODO: Try to use CNN model - less parameters
 #TODO: Last layer softmax!!! normalize input also
 
-def train(model, train_loader, args, writer):
+class UpdateCount:
+    def __init__(self):
+        self.count = 0
+
+def train(model, train_loader, args, writer, device, optimizer, criterion, epoch, update_count):
     # Turn on training mode
     model.train()
     train_loss = 0.0
     start_time = time.time()
-    global update_count
 
     for batch_idx, (array, offsets, weights, embs,  sparse_matrix) in enumerate(train_loader):
 
@@ -44,7 +44,7 @@ def train(model, train_loader, args, writer):
 
         if args.total_anneal_steps > 0:
             anneal = min(args.anneal_cap,
-                         1. * update_count / args.total_anneal_steps)
+                         1. * update_count.count / args.total_anneal_steps)
         else:
             anneal = args.anneal_cap
 
@@ -58,7 +58,7 @@ def train(model, train_loader, args, writer):
         train_loss += loss.item()
         optimizer.step()
 
-        update_count += 1
+        update_count.count += 1
 
         if batch_idx % args.log_interval == 0 and batch_idx > 0:
             elapsed = time.time() - start_time
@@ -83,7 +83,6 @@ def evaluate(model,args, validation_train_loader, validation_test_loader):
     # Turn on evaluation mode
     model.eval()
     total_loss = 0.0
-    global update_count
     e_idxlist = list(range(data_tr.shape[0]))
     e_N = data_tr.shape[0]
     n100_list = []
@@ -100,7 +99,7 @@ def evaluate(model,args, validation_train_loader, validation_test_loader):
 
             if args.total_anneal_steps > 0:
                 anneal = min(args.anneal_cap,
-                             1. * update_count / args.total_anneal_steps)
+                             1. * update_count.count / args.total_anneal_steps)
             else:
                 anneal = args.anneal_cap
 
@@ -132,8 +131,7 @@ def evaluate(model,args, validation_train_loader, validation_test_loader):
 
     return total_loss, np.mean(n100_list), np.mean(r20_list), np.mean(r50_list)
 
-
-if __name__=='__main__':
+def main():
     parser = argparse.ArgumentParser(description='PyTorch Variational Autoencoders for Collaborative Filtering')
     parser.add_argument('--input_file', type=str, default='data/processed_output.h5',
                         help='Processed input h5 file.')
@@ -143,7 +141,7 @@ if __name__=='__main__':
                         help='initial learning rate')
     parser.add_argument('--wd', type=float, default=0.00,
                         help='weight decay coefficient')
-    parser.add_argument('--batch_size', type=int, default=500,
+    parser.add_argument('--batch_size', type=int, default=16,
                         help='batch size')
     parser.add_argument('--epochs', type=int, default=200,
                         help='upper epoch limit')
@@ -161,6 +159,11 @@ if __name__=='__main__':
                         help='path to save the final model')
     parser.add_argument('--workers', type=int, default=2,
                         help='num workers')
+    parser.add_argument('--hidden_dim1', type=int, default=150,
+                        help='Dimension of first layer in model.')
+    parser.add_argument('--hidden_dim2', type=int, default=50,
+                        help='Dimension of second layer in model.')
+
     args = parser.parse_args()
 
     # Set the random seed manually for reproductibility.
@@ -170,9 +173,11 @@ if __name__=='__main__':
             print("WARNING: You have a CUDA device, so you should probably run with --cuda")
 
     device = torch.device("cuda" if args.cuda else "cpu")
-    device = torch.device("cuda")
-    device = torch.device("cpu")
-    args.batch_size = 32
+    # device = torch.device("cuda")
+
+    # warnings.warn("Using CPU")
+    # device = torch.device("cpu")
+    # args.batch_size = 16
     ###############################################################################
     # Load data
     ###############################################################################
@@ -197,7 +202,7 @@ if __name__=='__main__':
     p_dims = [100, 300, train_dataset.authors_n]
 
     #TODO
-    model = models.SparseMultiVAE(train_dataset.authors_n).to(device)
+    model = models.SparseMultiVAE(train_dataset.authors_n, args.hidden_dim1, args.hidden_dim2).to(device)
 
     # model = models.MultiVAE(p_dims, half_precision=False).to(device)
 
@@ -208,7 +213,7 @@ if __name__=='__main__':
     ###############################################################################
 
     best_n100 = -np.inf
-    update_count = 0
+    update_count = UpdateCount()
 
     # TensorboardX Writer
     writer = SummaryWriter()
@@ -217,7 +222,7 @@ if __name__=='__main__':
     try:
         for epoch in range(1, args.epochs + 1):
             epoch_start_time = time.time()
-            train(model, train_loader, args, writer)
+            train(model, train_loader, args, writer, device, optimizer, criterion, epoch, update_count)
             # val_loss, n100, r20, r50 = evaluate(model,args ,validation_train_loader, validation_test_loader)
             # print('-' * 89)
             # print('| end of epoch {:3d} | time: {:4.2f}s | valid loss {:4.2f} | '
@@ -252,3 +257,12 @@ if __name__=='__main__':
     print('| End of training | test loss {:4.2f} | n100 {:4.2f} | r20 {:4.2f} | '
           'r50 {:4.2f}'.format(test_loss, n100, r20, r50))
     print('=' * 89)
+if __name__=='__main__':
+    profile = False
+    if profile:
+        # try: os.remove('program.prof')
+        # except Exception as e: print(e)
+        import cProfile
+        cProfile.run("main()",'program.prof')
+    else:
+        main()
