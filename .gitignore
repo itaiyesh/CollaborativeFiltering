@@ -1,0 +1,6 @@
+__pycache__
+backup
+data
+runs
+model.pt
+temp.h5
