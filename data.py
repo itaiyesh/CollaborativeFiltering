@@ -374,7 +374,7 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser(description='PyTorch Variational Autoencoders for Collaborative Filtering')
     parser.add_argument('--json_file', type=str, default='C:\\Users\iyeshuru\Downloads\dblp_papers_v11.txt',
                         help='Processed input h5 file.')
-    parser.add_argument('--limit', type=int, default=1000,
+    parser.add_argument('--limit', type=int, default=10000,
                         help='Limit number of data to process.')
     args = parser.parse_args()
 

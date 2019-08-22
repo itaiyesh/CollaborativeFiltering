@@ -179,8 +179,8 @@ def collect_embeddings(json_file,unique_paper_count,  processed_output_file, LIM
                     pbar.update(1)
 
                     paper_json = json.loads(line)
-
-                    if paper_json['id'] in visited_paper_ids or (skip_paper and skip_paper(paper_json)):
+                    paper_id = paper_json['id']
+                    if paper_id in visited_paper_ids or (skip_paper and skip_paper(paper_json)):
                         filtered_lines += 1
                         continue
 
@@ -188,6 +188,7 @@ def collect_embeddings(json_file,unique_paper_count,  processed_output_file, LIM
                     json_obj = json.loads(line)
                     sentence = json_obj['title']
                     list_of_paper_ids_emb.append(int(json_obj['id']))
+                    visited_paper_ids.add(paper_id)
 
                     chunk.append(sentence)
                     chunk_n = len(chunk)
