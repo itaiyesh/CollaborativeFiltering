@@ -2,6 +2,27 @@ import torch
 import numpy as np
 
 def sparse2torch_sparse(data, half_precision=False):
+
+    samples = data.shape[0]
+    features = data.shape[1]
+    coo_data = data.tocoo()
+    indices = torch.LongTensor([coo_data.row, coo_data.col])
+    # # np.exp(x) / sum(np.exp(x))
+    # print(data)
+    # print(type(data))
+    # print(data.expm1())
+    # exit()
+    row_norms_inv = 1 / np.sqrt(data.sum(1))
+    row2val = {i : row_norms_inv[i].item() for i in range(samples)}
+    values = np.array([row2val[r] for r in coo_data.row])
+    t = torch.sparse.FloatTensor(indices, torch.from_numpy(values).float(), [samples, features])
+    # print(t.to_dense())
+    # sd = data.toarray()
+    # print(sd / np.linalg.norm(sd, ord=2, axis=-1)[:, np.newaxis])
+    # exit()
+    return t
+
+def sparse2torch_sparseORIG(data, half_precision=False):
     """
     Convert scipy sparse matrix to torch sparse tensor with L2 Normalization
     This is much faster than naive use of torch.FloatTensor(data.toarray())
@@ -62,3 +83,13 @@ class DatasetBuffer:
             self.count = 0
             self.buffer = []
 
+import math
+
+def convert_size(size_bytes):
+   if size_bytes == 0:
+       return "0B"
+   size_name = ("B", "KB", "MB", "GB", "TB", "PB", "EB", "ZB", "YB")
+   i = int(math.floor(math.log(size_bytes, 1024)))
+   p = math.pow(1024, i)
+   s = round(size_bytes / p, 2)
+   return "%s %s" % (s, size_name[i])

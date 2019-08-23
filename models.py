@@ -197,20 +197,20 @@ class MultiVAE(nn.Module):
 
 
 class SparseMultiVAE(nn.Module):
-    def __init__(self, in_dim, hidden_dim1, hidden_dim2):
+    def __init__(self, in_dim, hidden_dim1, hidden_dim2, use_embeddings):
         super(SparseMultiVAE, self).__init__()
-        print("SparseMultiVAE: input dim = {}, hidden_dim1 = {} hidden_dim2 = {}".format(in_dim, hidden_dim1, hidden_dim2))
+        print("SparseMultiVAE: input dim = {}, hidden_dim1 = {} hidden_dim2 = {} using title embs: {}".format(in_dim, hidden_dim1, hidden_dim2, use_embeddings))
         self.in_dim = in_dim
         self.title_emb_dim = 512
         self.hidden_dim2 = hidden_dim2
         hidden_dim1 = hidden_dim1
-
+        self.use_embeddings = use_embeddings
         # Encode
         self.emb1 = nn.EmbeddingBag(in_dim, hidden_dim1, mode='sum')
         self.l1_title = nn.Linear(self.title_emb_dim, hidden_dim1)
 
         # Input from concat of emb1 and l1_title
-        self.l1 = nn.Linear(2 * hidden_dim1, 2 * self.hidden_dim2)
+        self.l1 = nn.Linear(2 * hidden_dim1 if use_embeddings else hidden_dim1, 2 * self.hidden_dim2)
 
         # Decode
         self.l2 = nn.Linear(self.hidden_dim2, hidden_dim1)
@@ -221,7 +221,9 @@ class SparseMultiVAE(nn.Module):
 
     def forward(self, array, offsets, weights, embs):
         mu, logvar = self.encode(array, offsets, weights, embs)
+        #TODO:R
         z = self.reparameterize(mu, logvar)
+        # z = mu
         return self.decode(z), mu, logvar
 
     def encode(self, array, offsets, weights, embs):
@@ -229,10 +231,18 @@ class SparseMultiVAE(nn.Module):
         # h = F.normalize(input)
         # h = self.drop(h)
 
+        #TODO: R
         x = self.emb1(input = array, offsets = offsets, per_sample_weights=weights)
-        e = self.l1_title(embs)
-        x = torch.cat((x,e), dim=1)
-        x = self.drop(x)
+        #TODO: R
+        # x = F.normalize(x)
+        if self.use_embeddings:
+            #TODO: embs are normalized?
+            e = self.l1_title(embs)
+            x = torch.cat((x,e), dim=1)
+        #TODO: R
+        # x = self.drop(x)
+
+
         # print(x.shape)
 
         x = self.l1(x)
@@ -280,14 +290,110 @@ class SparseMultiVAE(nn.Module):
             # Normal Initialization for Biases
             layer.bias.data.normal_(0.0, 0.001)
 
+class SparseMultiAE(nn.Module):
+    def __init__(self, in_dim, hidden_dim1, hidden_dim2, use_embeddings):
+        super(SparseMultiAE, self).__init__()
+        # use_embeddings = True
+        print("SparseMultiAE: input dim = {}, hidden_dim1 = {} hidden_dim2 = {} using title embs: {}".format(in_dim, hidden_dim1, hidden_dim2, use_embeddings))
+        self.in_dim = in_dim
+        self.title_emb_dim = 512
+        self.hidden_dim2 = hidden_dim2
+        hidden_dim1 = hidden_dim1
+        self.use_embeddings = use_embeddings
+        # Encode
+        self.emb1 = nn.EmbeddingBag(in_dim, hidden_dim1, mode='sum')
+        self.l1_title = nn.Linear(self.title_emb_dim, hidden_dim1)
+
+        # Input from concat of emb1 and l1_title
+        self.l1 = nn.Linear(2 * hidden_dim1 if use_embeddings else hidden_dim1,  self.hidden_dim2)
+
+        # Decode
+        self.l2 = nn.Linear(self.hidden_dim2, hidden_dim1)
+        self.l3 = nn.Linear(hidden_dim1, in_dim)
+        #TODO: Is this activated in eval?
+        self.drop = nn.Dropout(0.3)
+
+        # self.init_weights()
+
+    def forward(self, array, offsets, weights, embs):
+        z = self.encode(array, offsets, weights, embs)
+        return self.decode(z)
+
+    def encode(self, array, offsets, weights, embs):
+        # TODO: Put back?
+        # h = F.normalize(input)
+        # h = self.drop(h)
+
+        #TODO: R
+        x = self.emb1(input = array, offsets = offsets)#, per_sample_weights=weights)
+        #TODO: R
+        # x = F.normalize(x)
+        if self.use_embeddings:
+            #TODO: embs are normalized?
+            e = self.l1_title(embs)
+            x = torch.cat((x,e), dim=1)
+        #TODO: R
+        x = self.drop(x)
+
+
+        # print(x.shape)
+
+        x = self.l1(x)
+        x = torch.tanh(x)
+
+        return x
+
+
+    def decode(self, z):
+        z = self.l2(z)
+        z = torch.tanh(z)
+        z = self.l3(z)
+        return z
+
+
+    def init_weights(self):
+        for layer in self.q_layers:
+            # Xavier Initialization for weights
+            size = layer.weight.size()
+            fan_out = size[0]
+            fan_in = size[1]
+            std = np.sqrt(2.0 / (fan_in + fan_out))
+            layer.weight.data.normal_(0.0, std)
+
+            # Normal Initialization for Biases
+            layer.bias.data.normal_(0.0, 0.001)
+
+        for layer in self.p_layers:
+            # Xavier Initialization for weights
+            size = layer.weight.size()
+            fan_out = size[0]
+            fan_in = size[1]
+            std = np.sqrt(2.0 / (fan_in + fan_out))
+            layer.weight.data.normal_(0.0, std)
+
+            # Normal Initialization for Biases
+            layer.bias.data.normal_(0.0, 0.001)
+
+def loss_function_l2(recon_x, x):
+    recon_x_ = F.normalize(recon_x)
+    return torch.norm(recon_x_ - x.to_dense())
+
+def loss_functionNORM2ZERO(recon_x, x, mu, logvar, anneal=1.0):
+
+    recon_x_ = F.normalize(recon_x)
+
+    return torch.norm(recon_x_ - x.to_dense())
+
+    # return BCE
+    KLD = -0.5 * torch.mean(torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1))
+    # return KLD
+    return BCE + anneal * KLD
 
 def loss_function(recon_x, x, mu, logvar, anneal=1.0):
     # BCE = F.binary_cross_entropy(recon_x, x)
     # BCE = -torch.mean(torch.sum(F.log_softmax(recon_x, 1) * x, -1))
-    # BCE2 = -torch.mean(torch.sum(torch.mm(F.log_softmax(recon_x, 1),x.to_dense().t()), -1))
-    BCE = -torch.mean(torch.sum(F.log_softmax(recon_x, 1) * x.to_dense(), -1))
 
-    # print("{} - {}".format(BCE, BCE2))
+    BCE = -torch.mean(torch.sum(F.log_softmax(recon_x, 1) * x.to_dense(), -1))
 
     KLD = -0.5 * torch.mean(torch.sum(1 + logvar - mu.pow(2) - logvar.exp(), dim=1))
 

@@ -12,6 +12,7 @@ import models
 import metric
 from utils import naive_sparse2tensor,sparse2torch_sparse
 from data import *
+import pickle
 #TODO: Dataloader is not multi process
 #TODO: Dataloader to add embeddings
 #TODO: Save mapping of original paper/author ids to indexes.
@@ -49,12 +50,27 @@ def train(model, train_loader, args, writer, device, optimizer, criterion, epoch
             anneal = args.anneal_cap
 
         optimizer.zero_grad()
-        recon_batch, mu, logvar = model(array, offsets, weights, embs)
 
-        # loss = criterion(recon_batch, batch, mu, logvar, anneal)
-        loss = criterion(recon_batch, sparse_matrix, mu, logvar, anneal)
+        # For multiVAE
+        # recon_batch, mu, logvar = model(array, offsets, weights, embs)
+        # loss = criterion(recon_batch, sparse_matrix, mu, logvar, anneal)
+
+        # For multiAE
+        recon_batch = model(array, offsets, weights, embs)
+        loss = criterion(recon_batch, sparse_matrix)
+
         # torch.cuda.empty_cache()
         loss.backward()
+        # for param_group in optimizer.param_groups:
+        #     print(param_group['lr'])
+
+        print(loss.item())
+        # TODO: This block is my addition
+        with open(args.save, 'wb') as f:
+            torch.save(model, f)
+
+        # if batch_idx % args.log_interval == 0 and batch_idx > 0:
+        #     print(loss)
         train_loss += loss.item()
         optimizer.step()
 
@@ -137,7 +153,12 @@ def main():
                         help='Processed input h5 file.')
     parser.add_argument('--embeddings_file', type=str, default='data/embeddings_output.h5',
                         help='Processed input h5 file.')
-    parser.add_argument('--lr', type=float, default=1e-4,
+    parser.add_argument('--paper2embedding_idx', type=str, default='data/paper2embedding_idx.pickle',
+                        help='paper -> embedding vector index in embeddings file.')
+    parser.add_argument('--author2idx', type=str, default='data/author2idx.pickle',
+                        help='author -> ID mapping (vocabulary mapping).')
+
+    parser.add_argument('--lr', type=float, default=1e-3,
                         help='initial learning rate')
     parser.add_argument('--wd', type=float, default=0.00,
                         help='weight decay coefficient')
@@ -153,15 +174,17 @@ def main():
                         help='random seed')
     parser.add_argument('--cuda', action='store_true',
                         help='use CUDA')
-    parser.add_argument('--log-interval', type=int, default=10, metavar='N',
+    parser.add_argument('--use_embeddings', action='store_true',
+                        help='use paper title embeddings')
+    parser.add_argument('--log-interval', type=int, default=100, metavar='N',
                         help='report interval')
     parser.add_argument('--save', type=str, default='model.pt',
                         help='path to save the final model')
-    parser.add_argument('--workers', type=int, default=2,
+    parser.add_argument('--workers', type=int, default=1,
                         help='num workers')
-    parser.add_argument('--hidden_dim1', type=int, default=150,
+    parser.add_argument('--hidden_dim1', type=int, default=600, #150
                         help='Dimension of first layer in model.')
-    parser.add_argument('--hidden_dim2', type=int, default=50,
+    parser.add_argument('--hidden_dim2', type=int, default=300, #50
                         help='Dimension of second layer in model.')
 
     args = parser.parse_args()
@@ -173,6 +196,9 @@ def main():
             print("WARNING: You have a CUDA device, so you should probably run with --cuda")
 
     device = torch.device("cuda" if args.cuda else "cpu")
+
+    args.use_embeddings = True
+    warnings.warn("Overriding arg: use embedding: {}".format(args.use_embeddings))
     # device = torch.device("cuda")
 
     # warnings.warn("Using CPU")
@@ -182,15 +208,18 @@ def main():
     # Load data
     ###############################################################################
 
-    train_dataset = H5Dataset(args.input_file, args.embeddings_file,  'train', 'train')
+    with open(args.author2idx, 'rb') as handle:
+        authors_n = len(pickle.load(handle))
+
+    train_dataset = H5Dataset(args.input_file, 'train', 'train' ,authors_n, args.embeddings_file, args.paper2embedding_idx)
     train_sampler = RangeSampler(list(range(0, len(train_dataset)))) #TODO: See if can be omitted
     train_loader = H5DataLoader(train_dataset, train_sampler, args.batch_size, args.workers)
 
-    validation_train_dataset = H5Dataset(args.input_file,args.embeddings_file, 'validation', 'train')
+    validation_train_dataset = H5Dataset(args.input_file, 'validation', 'train', authors_n, args.embeddings_file, args.paper2embedding_idx)
     validation_train_sampler = RangeSampler(list(range(0, len(validation_train_dataset))))
     validation_train_loader = H5DataLoader( validation_train_dataset, validation_train_sampler, args.batch_size, args.workers)
 
-    validation_test_dataset = H5Dataset(args.input_file,args.embeddings_file, 'validation', 'test')
+    validation_test_dataset = H5Dataset(args.input_file, 'validation', 'test', authors_n, args.embeddings_file,args.paper2embedding_idx)
     validation_test_sampler = RangeSampler(list(range(0, len(validation_test_dataset))))
     validation_test_loader = H5DataLoader( validation_test_dataset, validation_test_sampler, args.batch_size, args.workers)
 
@@ -202,12 +231,15 @@ def main():
     p_dims = [100, 300, train_dataset.authors_n]
 
     #TODO
-    model = models.SparseMultiVAE(train_dataset.authors_n, args.hidden_dim1, args.hidden_dim2).to(device)
+    # model = models.SparseMultiVAE(train_dataset.authors_n, args.hidden_dim1, args.hidden_dim2, args.use_embeddings).to(device)
+    # criterion = models.loss_function
+
+    model = models.SparseMultiAE(train_dataset.authors_n, args.hidden_dim1, args.hidden_dim2, args.use_embeddings).to(device)
+    criterion = models.loss_function_l2
 
     # model = models.MultiVAE(p_dims, half_precision=False).to(device)
 
-    optimizer = optim.Adam(model.parameters(), lr=1e-3, weight_decay=args.wd)
-    criterion = models.loss_function
+    optimizer = optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
     ###############################################################################
     # Training code
     ###############################################################################

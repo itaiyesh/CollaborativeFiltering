@@ -11,15 +11,16 @@ from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.sampler import Sampler
 from tqdm import tqdm
 import argparse
+import pickle
 
-from utils import DatasetBuffer
+from utils import DatasetBuffer, convert_size
 
 # TODO: Put this class elsewhere
 MAXIMUM_LEN = 30  # TODO: Get this parameter from preprocessing
 
 
 class H5Dataset(Dataset):
-    def __init__(self, interaction_file_path, embeddings_file_path, group_name, ds_name):
+    def __init__(self, interaction_file_path,  group_name, ds_name, authors_n, embeddings_file_path, paper2embedding_idx_pickle):
         self.interaction_file_path = interaction_file_path
         self.embeddings_file_path = embeddings_file_path
         self.group_name = group_name
@@ -27,10 +28,16 @@ class H5Dataset(Dataset):
         self.authors_n = None
         self.maximum_len = MAXIMUM_LEN
 
+        self.paper2embedding_idx_pickle = paper2embedding_idx_pickle
+        self.paper2embedding_idx = None
+        # warnings.warn("Loading paper2embedding hash into dataset (which may instantiate for each process)")
+        # with open(paper2embedding_idx_pickle, 'rb') as handle:
+        #     self.paper2embedding_idx = pickle.load(handle)
+
         with h5py.File(self.interaction_file_path, 'r', libver='latest') as f:  # , swmr=True)
             samples = f[group_name][ds_name]
             self.n = len(samples)
-            self.authors_n = len(f['author2idx'])
+            self.authors_n = authors_n# len(f['author2idx'])
 
     def __len__(self):
         return self.n
@@ -119,20 +126,31 @@ class H5DataLoader(DataLoader):
 
             # Sort paper2author_idxs_scores by paper2embedding_idx before everything.
             # TODO: Cache this (can't put in dataloder...may instantiate many times?)
-            paper2embedding_idx = embs_f['paper2embeddings_idx']
-            paper_embedding_idxs = [paper2embedding_idx[paper_id][()][0] for paper_id in paper2author_idxs_scores.keys()]
+
+            # We only load paper2embedding pickle on first access.
+            if self.dataset.paper2embedding_idx is None:
+                warnings.warn("Loading paper2embedding hash into dataset (which may instantiate for each process)")
+                with open(self.dataset.paper2embedding_idx_pickle, 'rb') as handle:
+                    self.dataset.paper2embedding_idx = pickle.load(handle)
+
+            paper_embedding_idxs = [self.dataset.paper2embedding_idx[paper_id] for paper_id in paper2author_idxs_scores.keys()]
             paper_embedding_idxs, sorted_keys = zip(*sorted(zip(paper_embedding_idxs, paper2author_idxs_scores.keys()), key = lambda x: x[0]))
 
             sorted_keys = list(sorted_keys)
             paper_embedding_idxs = list(paper_embedding_idxs)
+            # print(paper_embedding_idxs)
 
             # Important: The order of keys in paper2idxs is crucial for coordination between the two:
             array, offsets, weights = create_bow(paper2author_idxs_scores, sorted_keys)
+
             embs = embs_f['embeddings'][paper_embedding_idxs]
             embs = torch.tensor(embs, dtype=torch.float)
             #TODO: Remove in inference (we don't use this matrix)
             sparse_array = create_sparse_matrix(self.dataset.authors_n, paper2author_idxs_scores,sorted_keys)
-
+            # print(array, offsets, weights)
+            # print("SPARSE:")
+            # print(sparse_array)
+            # exit()
             return array, offsets, weights, embs, sparse_array
 
     # # Close ds file
@@ -152,35 +170,25 @@ class RangeSampler(Sampler):
 
 MINIMUM_YEAR = 2000
 # LIMIT = 100000  # None#1000000
-CHUNK_SIZE = 2048
+CHUNK_SIZE = 1#2048
 
 
 def skip_paper(paper_json):
     return 'year' not in paper_json or paper_json['year'] < MINIMUM_YEAR
 
 def create_paper_author_score_triples(json_file, output_file, LIMIT):
-    triples = []
     AUTHOR_SCORE = 1.0
     CITED_AUTHOR_SCORE = 0.2
-    paper2authors = {}
     warnings.warn("You're using a chunk of {}".format(CHUNK_SIZE))
-
-    # cited_papers_pairs = []
 
     filtered_lines = 0
     total = 0
 
     print("Opening {}".format(json_file))
-    with open(json_file, 'r') as input_f, h5py.File(output_file, 'w') as output_h5:
+    with open(json_file, 'r') as input_f, h5py.File(output_file, 'w', libver='latest') as output_h5:
 
         string_dt = h5py.special_dtype(vlen=str)
 
-        # Paper -> [author1,...authorN]
-        # paper2authors_ds = output_h5.create_dataset('paper2author',
-        #                                             maxshape=(500000000, 2),
-        #                                             shape=(0, 2),
-        #                                             chunks=(CHUNK_SIZE, 2),
-        #                                             dtype=string_dt)
 
         paper_direct_author_score_ds = output_h5.create_dataset('paper_direct_author_score',
                                                                 # TODO: Change big size to None
@@ -204,8 +212,8 @@ def create_paper_author_score_triples(json_file, output_file, LIMIT):
                                                          chunks=(CHUNK_SIZE, 3),
                                                          dtype=string_dt)
 
-        # tuple2score_grp = output_h5.create_group('tuple2score')
-        paper2authors_grp = output_h5.create_group('paper2authors')
+
+        paper2authors_hash = {}
 
         # paper2authors_bf = DatasetBuffer(paper2authors_ds, buffer_size=CHUNK_SIZE)
         paper_direct_author_bf = DatasetBuffer(paper_direct_author_score_ds, buffer_size=CHUNK_SIZE)
@@ -246,52 +254,43 @@ def create_paper_author_score_triples(json_file, output_file, LIMIT):
                 for author in paper_json['authors']:
                     author_id = author['id']
 
-                    # # # TODO: Sanity check:
-                    # if author_id == '1042385918':
-                    #     print(paper_json['authors'])
-
-                    # paper2authors[paper_id].append(author_id)
                     paper_authors.append(author_id)
 
-                    # triples.append((paper_id, author_id, AUTHOR_SCORE))
                     paper_direct_author_bf.add(np.array([paper_id, author_id, AUTHOR_SCORE], dtype=object))
 
-                paper2authors_grp.create_dataset(paper_id, data=np.array(paper_authors, dtype='S'), dtype=string_dt)
+                paper2authors_hash[paper_id] = paper_authors
 
                 if 'references' in paper_json:
                     for ref_id in paper_json['references']:
-                        # cited_papers_pairs.append((paper_id, ref_id))
                         cited_paper_pairs_bf.add(np.array([paper_id, ref_id], dtype=object))
+
         paper_direct_author_bf.close()
         cited_paper_pairs_bf.close()
         pbar.close()
 
-        print("Total papers in db: {}. filtered {}: {}".format(total, MINIMUM_YEAR, filtered_lines))
+        print("Total papers processed: {}. filtered out {}: {}".format(total, MINIMUM_YEAR, filtered_lines))
 
         # Sum all scores per (paper,author, score).
         # (paper, author) -> total score
-        # This is the only object held in memory throughout processing
         tuple2score = {}
         for paper, author, score in tqdm(paper_direct_author_score_ds, total=len(paper_direct_author_score_ds),
-                                         desc='Summing direct authors'):
+                                         desc='Summing scores of direct paper authors'):
             if (paper, author) not in tuple2score:
                 tuple2score[(paper, author)] = 0
 
             tuple2score[(paper, author)] += float(score)
 
         # Add all cited author triples ( can only be done in 2nd iteration)
-        # This stage is a bottleneck in the processing since we access paper2author mapping (which is on disk) frequently.
-        # better to move paper2author map to memory on stronger systems (I promise a 4x speed up).
         for paper, cited_paper in tqdm(cited_paper_pairs_ds, total=len(cited_paper_pairs_ds),
-                                       desc='Summing cited authors'):
+                                       desc='Summing scores of cited authors'):
 
             # if cited_paper not in paper2authors:
-            if cited_paper not in paper2authors_grp:
+            if cited_paper not in paper2authors_hash:
                 # This case is only possible when not training on full dataset,
                 # otherwise, cited_paper is expected to be in paper2author hash.
                 continue
             # for cited_author in paper2authors[cited_paper]:
-            for cited_author in paper2authors_grp[cited_paper]:
+            for cited_author in paper2authors_hash[cited_paper]:
                 if (paper, cited_author) not in tuple2score:
                     tuple2score[(paper, cited_author)] = 0
 
@@ -306,7 +305,7 @@ def create_paper_author_score_triples(json_file, output_file, LIMIT):
         del tuple2score
         del paper_direct_author_score_ds
         del cited_paper_pairs_ds
-        del paper2authors_grp
+        del paper2authors_hash
 
         gc.collect()
 
@@ -369,20 +368,24 @@ def add_data(paper_author_score_ds, tr_bf, te_bf, index_range, paper2idxs, autho
                     tr_bf.add(row_convert_author2idx(row))
 
 
-
-if __name__ == '__main__':
+def main():
     parser = argparse.ArgumentParser(description='PyTorch Variational Autoencoders for Collaborative Filtering')
     parser.add_argument('--json_file', type=str, default='C:\\Users\iyeshuru\Downloads\dblp_papers_v11.txt',
                         help='Processed input h5 file.')
-    parser.add_argument('--limit', type=int, default=10000,
+    parser.add_argument('--limit', type=int, default=None,
                         help='Limit number of data to process.')
+    parser.add_argument('--release', action='store_true',
+                        help='Build only training set (no validation/test)')
     args = parser.parse_args()
 
     # json_file = 'C:\\Users\iyeshuru\PycharmProjects\PapersProject\\flow\dblp.cut'
     # json_file = 'C:\\Users\iyeshuru\PycharmProjects\PapersProject\\flow\dblp.large.cut'
     # json_file = 'C:\\Users\iyeshuru\Downloads\dblp_papers_v11.txt'
-    # json_file = 'C:\\Users\iyeshuru\PycharmProjects\PapersProject\\flow\dblp_test.txt'
-    json_file = args.json_file
+    json_file = 'C:\\Users\iyeshuru\PycharmProjects\PapersProject\\flow\dblp_test.txt'
+    # json_file = args.json_file
+
+    args.release = True
+    args.limit = 1000
 
     DATA_DIR = 'data/'
 
@@ -393,7 +396,9 @@ if __name__ == '__main__':
     raw_output = os.path.join(DATA_DIR, 'raw_output.h5')
     processed_output_file = os.path.join(DATA_DIR, 'processed_output.h5')
     embeddings_output_file = os.path.join(DATA_DIR, 'embeddings_output.h5')
-
+    author2idx_pickle = os.path.join(DATA_DIR, 'author2idx.pickle')
+    idx2author_pickle = os.path.join(DATA_DIR, 'idx2author.pickle')
+    paper2embedding_idx_pickle = os.path.join(DATA_DIR, 'paper2embedding_idx.pickle')
 
     # Process data
     create_paper_author_score_triples(json_file, raw_output, args.limit)
@@ -413,9 +418,15 @@ if __name__ == '__main__':
     n_heldout_users = int(unique_papers_count * 0.2)
 
     # Split Train/Validation/Test User Indices
-    tr_papers_index_range = [0, unique_papers_count - n_heldout_users * 2]
-    vd_papers_index_range = [unique_papers_count - n_heldout_users * 2, unique_papers_count - n_heldout_users]
-    te_papers_index_range = [unique_papers_count - n_heldout_users, unique_papers_count]
+    if args.release:
+        print("Release: building only train set.")
+        tr_papers_index_range = [0, unique_papers_count]
+        vd_papers_index_range = [0, 0]
+        te_papers_index_range = [0, 0]
+    else:
+        tr_papers_index_range = [0, unique_papers_count - n_heldout_users * 2]
+        vd_papers_index_range = [unique_papers_count - n_heldout_users * 2, unique_papers_count - n_heldout_users]
+        te_papers_index_range = [unique_papers_count - n_heldout_users, unique_papers_count]
 
     for dataset, index_range in zip([
         "Train", "Validation", "Test"
@@ -444,16 +455,23 @@ if __name__ == '__main__':
         paper_author_score_ds = raw_f['paper_author_score']
 
         # Save mapping to ds
-        author2idx_grp = processed_f.create_group('author2idx')
-        for author, idx in tqdm(author2idx.items(), total=len(author2idx), desc='Saving mapping'):
-            author2idx_grp.create_dataset(author,
-                                          data=(idx,))  # data=np.array(paper_authors, dtype='S'), dtype=string_dt)
+        with open(author2idx_pickle, 'wb') as handle:
+            pickle.dump(author2idx, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+        print("Saved {} (size: {})".format(author2idx_pickle, convert_size(os.path.getsize(author2idx_pickle))))
 
         # Save reverse mapping to ds (used in inference)
-        idx2author_grp = processed_f.create_group('idx2author')
+        idx2author = {}
         for author, idx in tqdm(author2idx.items(), total=len(author2idx), desc='Saving reverse mapping'):
-            idx2author_grp.create_dataset(str(idx),
-                                          data=np.array([author], dtype='S'))
+            idx2author[idx] = author
+
+        with open(idx2author_pickle, 'wb') as handle:
+            pickle.dump(idx2author, handle, protocol=pickle.HIGHEST_PROTOCOL)
+
+        print("Saved {} (size: {})".format(idx2author_pickle, convert_size(os.path.getsize(idx2author_pickle))))
+
+        del idx2author
+        gc.collect()
 
         train_grp = processed_f.create_group('train')
         validation_grp = processed_f.create_group('validation')
@@ -491,13 +509,18 @@ if __name__ == '__main__':
         for buffer in buffers:
             buffer.close()
 
-
     ########## Add title embeddings #######################
-    #TODO: Pass last two args differnetly...
+    # TODO: Pass last two args differnetly...
     from get_embeddings import collect_embeddings
     # collect_embeddings(json_file, embeddings_output_file, args.limit, CHUNK_SIZE, skip_paper)
-    collect_embeddings(json_file, unique_papers_count, embeddings_output_file, args.limit, CHUNK_SIZE, skip_paper)
-
-
+    collect_embeddings(paper2embedding_idx_pickle, json_file, unique_papers_count, embeddings_output_file, args.limit, CHUNK_SIZE, skip_paper)
 
     print("Done!")
+
+if __name__ == '__main__':
+    profile = False
+    if profile:
+        import cProfile
+        cProfile.run("main()",'program.prof')
+    else:
+        main()

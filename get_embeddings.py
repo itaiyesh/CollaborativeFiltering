@@ -10,7 +10,7 @@ from tqdm import tqdm
 import numpy as np
 import h5py
 from utils import DatasetBuffer
-
+import pickle
 config = tf.ConfigProto(
     # intra_op_parallelism_threads=2,
     #                     inter_op_parallelism_threads=2,
@@ -124,9 +124,11 @@ def create_embeddings_for_sentenecs(sentences, embeddings_file):
     return list_of_paper_ids_emb
 
 # Collect embeddings from file and save into h5 (append)
-def collect_embeddings(json_file,unique_paper_count,  processed_output_file, LIMIT, CHUNK_SIZE, skip_paper = None):
-    list_of_paper_ids_emb = []
-    with open(json_file, 'r') as input_f, h5py.File(processed_output_file, 'w') as processed_f, tf.Graph().as_default():
+def collect_embeddings(paper2embedding_idx_pickle, json_file,unique_paper_count,  processed_output_file, LIMIT, CHUNK_SIZE, skip_paper = None):
+
+    paper2embedding_idx = {}
+
+    with open(json_file, 'r') as input_f, h5py.File(processed_output_file, 'w', libver='latest') as processed_f, tf.Graph().as_default():
         # Prepare model
         embed = hub.Module("https://tfhub.dev/google/universal-sentence-encoder-large/3")
         print("Downloaded model.")
@@ -147,8 +149,6 @@ def collect_embeddings(json_file,unique_paper_count,  processed_output_file, LIM
                                                     chunks=(min(CHUNK_SIZE, unique_paper_count), embeddings_n),
                                                     dtype='f')
 
-        paper2embedding_idx_grp = processed_f.create_group('paper2embeddings_idx')
-
         with tf.Session(config=config) as session:
             session.run([tf.global_variables_initializer(), tf.tables_initializer()])
             chunk = []
@@ -160,6 +160,7 @@ def collect_embeddings(json_file,unique_paper_count,  processed_output_file, LIM
             filtered_lines =0
             pbar = tqdm(total=total_lines, desc='Generating embeddings')
             continue_read = True
+            actual_paper_index_counter = 0
 
             while continue_read:
 
@@ -180,17 +181,16 @@ def collect_embeddings(json_file,unique_paper_count,  processed_output_file, LIM
 
                     paper_json = json.loads(line)
                     paper_id = paper_json['id']
-                    if paper_id in visited_paper_ids or (skip_paper and skip_paper(paper_json)):
+                    if skip_paper and skip_paper(paper_json):
                         filtered_lines += 1
                         continue
 
-
-                    json_obj = json.loads(line)
-                    sentence = json_obj['title']
-                    list_of_paper_ids_emb.append(int(json_obj['id']))
-                    visited_paper_ids.add(paper_id)
+                    sentence = paper_json['title']
 
                     chunk.append(sentence)
+                    paper2embedding_idx[paper_id] = actual_paper_index_counter
+                    actual_paper_index_counter +=1
+
                     chunk_n = len(chunk)
 
                     if len(chunk) == CHUNK_SIZE or i == len(lines)-1: # Notice, we chunk up if we hit 8192 lines.
@@ -201,15 +201,33 @@ def collect_embeddings(json_file,unique_paper_count,  processed_output_file, LIM
                         chunk.clear()
 
 
-        print("Total lines processed: {} (skipped: {})".format(total,filtered_lines))
+        print("Total lines processed: {}. Actually saved: {} (skipped: {})".format(total,actual_paper_index_counter,filtered_lines))
 
         # Save paper_id -> index mapping
-        for i, paper_id in tqdm(enumerate(list_of_paper_ids_emb), total=len(list_of_paper_ids_emb), desc='Saving mapping'):
-            paper2embedding_idx_grp.create_dataset(str(paper_id),data=np.array([i]))
 
-            # paper2embedding_idx_grp.create_dataset(str(paper_id),data=np.array([str(i)], dtype='S'))
+        with open(paper2embedding_idx_pickle, 'wb') as handle:
+            pickle.dump(paper2embedding_idx, handle, protocol=pickle.HIGHEST_PROTOCOL)
 
-                                          # data=(str(i),))  # data=np.array(paper_authors, dtype='S'), dtype=string_dt)
+class EmbeddingHandler:
+    def __init__(self):
+        self.graph =  tf.Graph().as_default()
+        # embed = hub.Module("https://tfhub.dev/google/universal-sentence-encoder/2")
+        embed = hub.Module("https://tfhub.dev/google/universal-sentence-encoder-large/3")
+        print("Downloaded model.")
+
+        self.messages = tf.placeholder(dtype=tf.string, shape=[None])
+        self.output = embed(self.messages)
+
+        self.session =  tf.Session(config=config)
+        self.session.run([tf.global_variables_initializer(), tf.tables_initializer()])
+
+    def get_embeddings_for_sentence(self, sentence):
+        return self.session.run(self.output, feed_dict={self.messages: [sentence]})[0]
+
+    def __del__(self):
+        self.session.close()
+        self.graph.close()
+
 
 if __name__=='__main__':
     print(create_embeddings_for_sentenecs(['wtf my friend','are you sure?'], 'temp.h5'))
