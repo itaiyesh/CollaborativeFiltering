@@ -8,4 +8,4 @@ Bottleneck==1.2.1
 torch==1.2.0
 tqdm==4.32.1
 tensorboardX==1.8
-tensorflow==1.14.0
+tensorflow==2.7.2
